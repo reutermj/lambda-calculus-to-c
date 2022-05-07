@@ -1,11 +1,36 @@
-sealed class Token
+sealed class Token {
+    abstract fun parse(indexLookup: Map<String, Int>, depth: Int): Expression
+
+    fun parse(): Expression = parse(mapOf(), 0)
+}
 data class SymbolToken(val symbol: String): Token() {
     override fun toString(): String = symbol
+
+    override fun parse(indexLookup: Map<String, Int>, depth: Int): Expression =
+        Name(indexLookup[symbol] ?: throw Exception("couldnt find $symbol"))
 }
 data class SequenceToken(val children: List<Token>): Token() {
     override fun toString(): String {
         val s = children.fold("") { acc, node -> "$acc $node" }.substring(1)
         return "($s)"
+    }
+
+    override fun parse(indexLookup: Map<String, Int>, depth: Int): Expression {
+        val first = children[0]
+        return if(first is SymbolToken && first.symbol == "fn") {
+            val second = children[1]
+            if(second is SymbolToken) {
+                val newLookup = indexLookup + Pair(second.symbol, depth)
+                val body = children[2].parse(newLookup, depth + 1)
+                Abstraction(body, body.closedValue - depth)
+            }
+            else throw Exception("You didnt use a name after fn")
+        }
+        else {
+            val function = first.parse(indexLookup, depth)
+            val argument = children[1].parse(indexLookup, depth)
+            Application(function, argument, function.closedValue + argument.closedValue)
+        }
     }
 }
 
@@ -56,79 +81,43 @@ fun tokenize(s: String): List<Token> {
 }
 
 sealed class Expression {
-    abstract fun closedValues(depth: Int): Set<Int>
-    abstract fun compile(prototypes: MutableList<String>, definitions: MutableList<String>, cvsToIndex: Map<Int, Int>, depth: Int)
+    abstract val closedValue: Set<Int>
+    abstract fun compile(pathName: String, cvsToIndex: Map<Int, Int>, depth: Int)
 }
-data class Abstraction(val body: Expression): Expression() {
+data class Abstraction(val body: Expression, override val closedValue: Set<Int>): Expression() {
     override fun toString(): String = "(\\ $body)"
-    override fun closedValues(depth: Int): Set<Int> = body.closedValues(depth + 1) - depth
-    override fun compile(prototypes: MutableList<String>, definitions: MutableList<String>, cvsToIndex: Map<Int, Int>, depth: Int) {
-        when(body) {
-            is Abstraction -> {
-                val cvs = body.closedValues(depth + 1)
-                val newCvsToIndex =
-                    if(cvs.contains(depth)) cvsToIndex + Pair(depth, cvsToIndex.size)
-                    else cvsToIndex
+    override fun compile(pathName: String, cvsToIndex: Map<Int, Int>, depth: Int) {
+        val p2 = pathName + "_f"
+        println("function* $p2(function* f, function** c) {")
+        body.compile(p2 + "_ret", cvsToIndex + Pair(depth, depth), depth)
+        println("return ${p2}_ret;")
+        println("}")
 
-                val buffer = StringBuffer();
-
-                if(newCvsToIndex.size > 0) {
-                    buffer.append("function** cv = (function**)malloc(sizeof(function*));\n")
-                    for(i in 0 until depth) {
-                        val index = cvsToIndex[i]
-                        if(index != null)
-                            buffer.append("cv[$index] = closedValues[$index];\n");
-                    }
-
-                    if(newCvsToIndex.contains(depth))
-                        buffer.append("cv[${cvsToIndex.size}] = f;\n");
-                }
-
-                println(buffer.toString())
-                body.compile(prototypes, definitions, newCvsToIndex, depth + 1)
-            }
-        }
+        println("function* $pathName = (function*)malloc(sizeof(function));")
+        println("function** ${pathName}_c = (function**)malloc(sizeof(function*) * ${cvsToIndex.size});")
+        println("$pathName->ptr = &$p2;")
+        println("$pathName->closedValues = ${pathName}_c;")
     }
 }
-data class Application(val function: Expression, val parameter: Expression): Expression() {
-    override fun toString(): String = "($function $parameter)"
-    override fun closedValues(depth: Int): Set<Int> = function.closedValues(depth) + parameter.closedValues(depth)
-    override fun compile(prototypes: MutableList<String>, definitions: MutableList<String>, cvsToIndex: Map<Int, Int>, depth: Int) {
-
+data class Application(val l: Expression, val r: Expression, override val closedValue: Set<Int>): Expression() {
+    override fun toString(): String = "($l $r)"
+    override fun compile(pathName: String, cvsToIndex: Map<Int, Int>, depth: Int) {
+        r.compile(pathName + "_r", cvsToIndex, depth);
+        l.compile(pathName + "_l", cvsToIndex, depth);
+        println("function* $pathName = ${pathName}_l->ptr(${pathName}_r, ${pathName}_l->closedValues);")
     }
 }
 data class Name(val index: Int): Expression() {
+    override val closedValue = setOf(index)
     override fun toString(): String = "$index"
-    override fun closedValues(depth: Int): Set<Int> = setOf(index)
-    override fun compile(prototypes: MutableList<String>, definitions: MutableList<String>, cvsToIndex: Map<Int, Int>, depth: Int) {
-
+    override fun compile(pathName: String, cvsToIndex: Map<Int, Int>, depth: Int) {
+        if(index == depth) { println("function* $pathName = f;") }
+        else println("function* $pathName = c[${cvsToIndex[index]}];")
     }
-}
-
-fun parse(tokens: List<Token>): List<Expression> {
-    fun inner(token: Token, indexLookup: Map<String, Int>, depth: Int): Expression {
-        return when(token) {
-            is SequenceToken -> {
-                val first = token.children[0]
-                if(first is SymbolToken && first.symbol == "fn") {
-                    val second = token.children[1]
-                    if(second is SymbolToken) {
-                        val newLookup = indexLookup + Pair(second.symbol, depth)
-                        Abstraction(inner(token.children[2], newLookup, depth + 1))
-                    }
-                    else throw Exception("You didnt use a name after fn")
-                }
-                else Application(inner(first, indexLookup, depth), inner(token.children[1], indexLookup, depth))
-            }
-            is SymbolToken -> Name(indexLookup[token.symbol] ?: throw Exception("couldnt find ${token.symbol}"))
-        }
-    }
-
-    return tokens.map { inner(it, mapOf(), 0) }
 }
 
 fun main() {
-    val p = parse(tokenize("(fn x (fn y (fn z ((x y) z))))"))
+    val p = tokenize("(fn x ((fn y (x y)) (x x)))").map { it.parse() }
     println(p)
-    p[0].compile(mutableListOf(), mutableListOf(), mapOf(), 0)
+    p[0].compile("f", mapOf(), 0)
 }
