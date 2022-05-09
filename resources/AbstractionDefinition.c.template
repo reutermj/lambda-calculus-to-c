@@ -1,0 +1,7 @@
+function* [[name]](function* f, function** c) {
+    printf("[[name]] called\n");
+    fflush(stdout);
+
+[[body]]
+    return [[return]];
+}

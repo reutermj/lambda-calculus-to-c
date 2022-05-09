@@ -1,0 +1,4 @@
+    function* [[name]] = (function*)malloc(sizeof(function));
+    [[name]]->ptr = &[[fnName]];
+    [[name]]->closedValues = (function**)malloc(sizeof(function*) * [[size]]);
+[[closures]]

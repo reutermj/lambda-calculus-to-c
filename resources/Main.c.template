@@ -1,0 +1,13 @@
+#include <stdio.h>
+#include <stdlib.h>
+typedef struct function {
+    struct function* (*ptr)(struct function*, struct function**);
+    struct function** closedValues;
+} function;
+
+[[prototypes]]
+[[functions]]
+int main() {
+[[body]]
+    return 0;
+}
