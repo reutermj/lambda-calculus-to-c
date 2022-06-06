@@ -84,44 +84,17 @@ fun tokenize(s: String): List<Token> {
 
 sealed class Expression {
     abstract val closedValue: Set<Int>
-    abstract fun compile(pathName: String, cvsToIndex: Map<Int, Int>, depth: Int, function: StringBuilder, prototypes: StringBuilder, code: StringBuilder)
-
     abstract fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): Triple<String, String, String>
 }
 data class Abstraction(val body: Expression, override val closedValue: Set<Int>): Expression() {
     override fun toString(): String = "(\\ $body)"
-    override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int, function: StringBuilder, prototypes: StringBuilder, code: StringBuilder) {
-        val fnName = pathName + "_f"
-
-        val builder = StringBuilder()
-        //create a prototype for this function
-        prototypes.append("function* $fnName(function*, function**);\n")
-
-        //create the definition of this function and compile the body into it
-        builder.append("function* $fnName(function* f, function** c) {\n")
-        builder.append("    printf(\"$fnName called\\n\");\n")
-        builder.append("    fflush(stdout);\n")
-        body.compile(fnName + "_ret", dbToArray + Pair(depth + 1, closedValue.size), depth + 1, builder, prototypes, code)
-        builder.append("    return ${fnName}_ret;\n")
-        builder.append("}\n")
-        code.append(builder.toString() + "\n")
-
-        //construct the function call for this function to be inserted into the code of the calling function
-        function.append("    function* $pathName = (function*)malloc(sizeof(function));\n")
-        function.append("    function** ${pathName}_c = (function**)malloc(sizeof(function*) * ${dbToArray.size});\n")
-        for(i in closedValue) {
-            if(i == depth) function.append("    ${pathName}_c[${dbToArray[i]}] = f;\n")
-            else function.append("    ${pathName}_c[${dbToArray[i]}] = c[${dbToArray[i]}];\n")
-        }
-        function.append("    $pathName->ptr = &$fnName;\n")
-        function.append("    $pathName->closedValues = ${pathName}_c;\n")
-    }
 
     override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): Triple<String, String, String> {
         val fnName = pathName + "_f"
         val retName = fnName + "_ret"
         val numClosures = closedValue.size
 
+        //generate the definition of the abstraction
         val (body, prototypes, program) = body.compile(retName, dbToArray + Pair(depth + 1, numClosures), depth + 1)
         val definition =
             abstractionDefinition
@@ -129,6 +102,7 @@ data class Abstraction(val body: Expression, override val closedValue: Set<Int>)
                 .replace("[[body]]", body)
                 .replace("[[return]]", retName)
 
+        //capture values closed over by the function
         val closures =
             closedValue.fold("") { acc, i ->
                 val closure =
@@ -143,6 +117,7 @@ data class Abstraction(val body: Expression, override val closedValue: Set<Int>)
                 acc + updated
             }
 
+        //generate the abstraction representation
         val call =
             abstractionCall
                 .replace("[[name]]", pathName)
@@ -157,11 +132,6 @@ data class Abstraction(val body: Expression, override val closedValue: Set<Int>)
 }
 data class Application(val l: Expression, val r: Expression, override val closedValue: Set<Int>): Expression() {
     override fun toString(): String = "($l $r)"
-    override fun compile(pathName: String, cvsToIndex: Map<Int, Int>, depth: Int, function: StringBuilder, prototypes: StringBuilder, code: StringBuilder) {
-        r.compile(pathName + "_r", cvsToIndex, depth, function, prototypes, code);
-        l.compile(pathName + "_l", cvsToIndex, depth, function, prototypes, code);
-        function.append("    function* $pathName = ${pathName}_l->ptr(${pathName}_r, ${pathName}_l->closedValues);\n")
-    }
 
     override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): Triple<String, String, String> {
         val nameR = pathName + "_r"
@@ -182,10 +152,6 @@ data class Application(val l: Expression, val r: Expression, override val closed
 data class Name(val index: Int): Expression() {
     override val closedValue = setOf(index)
     override fun toString(): String = "$index"
-    override fun compile(pathName: String, cvsToIndex: Map<Int, Int>, depth: Int, function: StringBuilder, prototypes: StringBuilder, code: StringBuilder) {
-        if(index == depth) { function.append("    function* $pathName = f;\n") }
-        else function.append("    function* $pathName = c[${cvsToIndex[index]}];\n")
-    }
 
     override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): Triple<String, String, String> {
         val value =
@@ -199,32 +165,6 @@ data class Name(val index: Int): Expression() {
 
         return Triple(updated, "", "")
     }
-}
-
-fun m1() {
-    val p = tokenize("((fn x x) (fn y y))").map { it.parse() }
-
-    val builder = StringBuilder()
-    val prototypes = StringBuilder()
-    val code = StringBuilder()
-    p[0].compile("f", mapOf(), -1, builder, prototypes, code)
-
-    println("#include <stdio.h>")
-    println("#include <stdlib.h>")
-    println("typedef struct function {")
-    println("    struct function* (*ptr)(struct function*, struct function**);")
-    println("    struct function** closedValues;")
-    println("} function;")
-    println()
-
-    println(prototypes.toString())
-    println(code.toString())
-
-    println("int main() {")
-    println(builder.toString())
-    println("    return 0;")
-    println("}")
-
 }
 
 fun main() {
