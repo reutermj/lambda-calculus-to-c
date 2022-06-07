@@ -1,0 +1,2 @@
+    function** [[name]]ClosedValues = (function**)malloc(sizeof(function*) * [[size]]);
+[[closures]]

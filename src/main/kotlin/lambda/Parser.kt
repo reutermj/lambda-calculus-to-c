@@ -1,5 +1,7 @@
 package lambda
 
+import java.io.File
+
 sealed class Token {
     abstract fun parse(indexLookup: Map<String, Int>, depth: Int): Expression
 
@@ -129,6 +131,46 @@ data class Abstraction(val body: Expression, override val closedValue: Set<Int>)
 
         return Triple(call, protos, program + definition)
     }
+
+    fun directCall(pathName: String, dbToArray: Map<Int, Int>, depth: Int): Triple<String, String, String> {
+        val fnName = pathName + "_f"
+        val retName = fnName + "_ret"
+        val numClosures = closedValue.size
+
+        //generate the definition of the abstraction
+        val (body, prototypes, program) = body.compile(retName, dbToArray + Pair(depth + 1, numClosures), depth + 1)
+        val definition =
+            abstractionDefinition
+                .replace("[[name]]", fnName)
+                .replace("[[body]]", body)
+                .replace("[[return]]", retName)
+
+        //capture values closed over by the function
+        val closures =
+            closedValue.fold("") { acc, i ->
+                val closure =
+                    if(i == depth) closureFromArgument
+                    else closureFromClosedValue
+
+                val updated =
+                    closure
+                        .replace("[[name]]", pathName)
+                        .replace("[[index]]", "${dbToArray[i]}")
+
+                acc + updated
+            }
+
+        //generate the abstraction representation
+        val call =
+            directAbstractionCall
+                .replace("[[name]]", pathName)
+                .replace("[[size]]", "$numClosures")
+                .replace("[[closures]]", closures)
+
+        val protos = prototypes + abstractionPrototype.replace("[[name]]", fnName)
+
+        return Triple(call, protos, program + definition)
+    }
 }
 data class Application(val l: Expression, val r: Expression, override val closedValue: Set<Int>): Expression() {
     override fun toString(): String = "($l $r)"
@@ -138,13 +180,28 @@ data class Application(val l: Expression, val r: Expression, override val closed
         val nameL = pathName + "_l"
 
         val (bodyR, prototypesR, programR) = r.compile(nameR, dbToArray, depth)
-        val (bodyL, prototypesL, programL) = l.compile(nameL, dbToArray, depth)
 
-        val application =
-            applicationDefinition
-                .replace("[[name]]", pathName)
-                .replace("[[nameR]]", nameR)
-                .replace("[[nameL]]", nameL)
+        val application: String
+
+        val (bodyL, prototypesL, programL) =
+            if(l is Abstraction) {
+                application =
+                    directApplicationDefinition
+                        .replace("[[name]]", pathName)
+                        .replace("[[nameR]]", nameR)
+                        .replace("[[nameL]]", nameL)
+
+                l.directCall(nameL, dbToArray, depth)
+            }
+            else {
+                application =
+                    applicationDefinition
+                        .replace("[[name]]", pathName)
+                        .replace("[[nameR]]", nameR)
+                        .replace("[[nameL]]", nameL)
+
+                l.compile(nameL, dbToArray, depth)
+            }
 
         return Triple(bodyR + bodyL + application, prototypesR + prototypesL, programR + programL)
     }
@@ -168,7 +225,7 @@ data class Name(val index: Int): Expression() {
 }
 
 fun main() {
-    val p = tokenize("((((fn x (fn y (fn z (x (y z))))) (fn c c)) (fn b b)) (fn a a))").map { it.parse() }
+    val p = tokenize("(((fn x (fn y (x y)))(fn z z))(fn w w))").map { it.parse() }
 
     val (body, prototypes, functions) = p[0].compile("f", mapOf(), -1)
     val program =
