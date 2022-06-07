@@ -91,7 +91,7 @@ sealed class Expression {
 data class Abstraction(val body: Expression, override val closedValue: Set<Int>): Expression() {
     override fun toString(): String = "(\\ $body)"
 
-    override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): Triple<String, String, String> {
+    private fun compileImpl(pathName: String, dbToArray: Map<Int, Int>, depth: Int, callTemplate: String): Triple<String, String, String> {
         val fnName = pathName + "_f"
         val retName = fnName + "_ret"
         val numClosures = closedValue.size
@@ -121,7 +121,7 @@ data class Abstraction(val body: Expression, override val closedValue: Set<Int>)
 
         //generate the abstraction representation
         val call =
-            abstractionCall
+            callTemplate
                 .replace("[[name]]", pathName)
                 .replace("[[fnName]]", fnName)
                 .replace("[[size]]", "$numClosures")
@@ -132,45 +132,11 @@ data class Abstraction(val body: Expression, override val closedValue: Set<Int>)
         return Triple(call, protos, program + definition)
     }
 
-    fun directCall(pathName: String, dbToArray: Map<Int, Int>, depth: Int): Triple<String, String, String> {
-        val fnName = pathName + "_f"
-        val retName = fnName + "_ret"
-        val numClosures = closedValue.size
+    override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int) =
+        compileImpl(pathName, dbToArray, depth, abstractionCall)
 
-        //generate the definition of the abstraction
-        val (body, prototypes, program) = body.compile(retName, dbToArray + Pair(depth + 1, numClosures), depth + 1)
-        val definition =
-            abstractionDefinition
-                .replace("[[name]]", fnName)
-                .replace("[[body]]", body)
-                .replace("[[return]]", retName)
-
-        //capture values closed over by the function
-        val closures =
-            closedValue.fold("") { acc, i ->
-                val closure =
-                    if(i == depth) closureFromArgument
-                    else closureFromClosedValue
-
-                val updated =
-                    closure
-                        .replace("[[name]]", pathName)
-                        .replace("[[index]]", "${dbToArray[i]}")
-
-                acc + updated
-            }
-
-        //generate the abstraction representation
-        val call =
-            directAbstractionCall
-                .replace("[[name]]", pathName)
-                .replace("[[size]]", "$numClosures")
-                .replace("[[closures]]", closures)
-
-        val protos = prototypes + abstractionPrototype.replace("[[name]]", fnName)
-
-        return Triple(call, protos, program + definition)
-    }
+    fun directCall(pathName: String, dbToArray: Map<Int, Int>, depth: Int) =
+        compileImpl(pathName, dbToArray, depth, directAbstractionCall)
 }
 data class Application(val l: Expression, val r: Expression, override val closedValue: Set<Int>): Expression() {
     override fun toString(): String = "($l $r)"
