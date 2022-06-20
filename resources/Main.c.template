@@ -3,11 +3,31 @@
 typedef struct function {
     struct function* (*ptr)(struct function*, struct function**);
     struct function** closedValues;
+    int references;
+    int numClosedValues;
 } function;
+
+void del(function* f) {
+    if(f->references > 1) f->references--;
+    else {
+        printf("freeing\n");
+        fflush(stdout);
+
+        for(int i = 0; i < f->numClosedValues; i++) del(f->closedValues[i]);
+        free(f->closedValues);
+        free(f);
+    }
+}
+
+void dup(function* f) {
+    f->references++;
+}
 
 [[prototypes]]
 [[functions]]
 int main() {
 [[body]]
+[[deletes]]
+    del(f);
     return 0;
 }
