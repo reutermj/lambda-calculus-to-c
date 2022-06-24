@@ -60,10 +60,9 @@ function* f_r_f(function* f, function** c) {
     function* f_r_f_ret = f;
     dup(f);
 
-
-
     return f_r_f_ret;
 }
+
 function* f_l_f_ret_r_f(function* f, function** c) {
     printf("f_l_f_ret_r_f called\n");
     fflush(stdout);
@@ -71,10 +70,9 @@ function* f_l_f_ret_r_f(function* f, function** c) {
     function* f_l_f_ret_r_f_ret = f;
     dup(f);
 
-
-
     return f_l_f_ret_r_f_ret;
 }
+
 function* f_l_f_ret_l_f(function* f, function** c) {
     printf("f_l_f_ret_l_f called\n");
     fflush(stdout);
@@ -82,10 +80,9 @@ function* f_l_f_ret_l_f(function* f, function** c) {
     function* f_l_f_ret_l_f_ret = c[0];
     dup(c[0]);
 
-
-
     return f_l_f_ret_l_f_ret;
 }
+
 function* f_l_f(function* f, function** c) {
     printf("f_l_f called\n");
     fflush(stdout);
@@ -103,7 +100,6 @@ function* f_l_f(function* f, function** c) {
     f_l_f_ret_l->closedValues[0] = f;
     dup(f);
     function* f_l_f_ret = f_l_f_ret_l->ptr(f_l_f_ret_r, f_l_f_ret_l->closedValues);
-
 
     del(f_l_f_ret_r);
     del(f_l_f_ret_l);
