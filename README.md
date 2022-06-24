@@ -3,6 +3,7 @@
 Implemented:
 
 * untyped lambda calculus
+* call by value evaluation order
 * de Bruijn indices for nameless representation of terms
 * Reference counting for freeing memory
 
