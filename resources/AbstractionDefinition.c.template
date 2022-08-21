@@ -3,5 +3,7 @@ function* [[name]](function* f, function** c) {
     fflush(stdout);
 
 [[body]]
+
+[[deletes]]
     return [[return]];
 }

@@ -1,5 +1,7 @@
 package lambda
 
+import java.io.File
+
 sealed class Token {
     abstract fun parse(indexLookup: Map<String, Int>, depth: Int): Expression
 
@@ -82,25 +84,28 @@ fun tokenize(s: String): List<Token> {
     return tokens
 }
 
+data class CompilerStuff(val body: String, val prototypes: String, val program: String, val deletes: String)
+
 sealed class Expression {
     abstract val closedValue: Set<Int>
-    abstract fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): Triple<String, String, String>
+    abstract fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): CompilerStuff
 }
 data class Abstraction(val body: Expression, override val closedValue: Set<Int>): Expression() {
     override fun toString(): String = "(\\ $body)"
 
-    override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): Triple<String, String, String> {
+    private fun compileImpl(pathName: String, dbToArray: Map<Int, Int>, depth: Int, callTemplate: String, umm: String): CompilerStuff {
         val fnName = pathName + "_f"
         val retName = fnName + "_ret"
         val numClosures = closedValue.size
 
         //generate the definition of the abstraction
-        val (body, prototypes, program) = body.compile(retName, dbToArray + Pair(depth + 1, numClosures), depth + 1)
+        val (body, prototypes, program, deletes) = body.compile(retName, dbToArray + Pair(depth + 1, numClosures), depth + 1)
         val definition =
             abstractionDefinition
                 .replace("[[name]]", fnName)
                 .replace("[[body]]", body)
                 .replace("[[return]]", retName)
+                .replace("[[deletes]]", deletes)
 
         //capture values closed over by the function
         val closures =
@@ -112,6 +117,7 @@ data class Abstraction(val body: Expression, override val closedValue: Set<Int>)
                 val updated =
                     closure
                         .replace("[[name]]", pathName)
+                        .replace("[[umm]]", umm)
                         .replace("[[index]]", "${dbToArray[i]}")
 
                 acc + updated
@@ -119,7 +125,7 @@ data class Abstraction(val body: Expression, override val closedValue: Set<Int>)
 
         //generate the abstraction representation
         val call =
-            abstractionCall
+            callTemplate
                 .replace("[[name]]", pathName)
                 .replace("[[fnName]]", fnName)
                 .replace("[[size]]", "$numClosures")
@@ -127,55 +133,78 @@ data class Abstraction(val body: Expression, override val closedValue: Set<Int>)
 
         val protos = prototypes + abstractionPrototype.replace("[[name]]", fnName)
 
-        return Triple(call, protos, program + definition)
+        return CompilerStuff(call, protos, program + definition, "    del($pathName);\n")
     }
+
+    override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int) =
+        compileImpl(pathName, dbToArray, depth, abstractionCall, "->closedValues")
+
+    fun directCall(pathName: String, dbToArray: Map<Int, Int>, depth: Int) =
+        compileImpl(pathName, dbToArray, depth, directAbstractionCall, "ClosedValues")
 }
 data class Application(val l: Expression, val r: Expression, override val closedValue: Set<Int>): Expression() {
     override fun toString(): String = "($l $r)"
 
-    override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): Triple<String, String, String> {
+    override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): CompilerStuff {
         val nameR = pathName + "_r"
         val nameL = pathName + "_l"
 
-        val (bodyR, prototypesR, programR) = r.compile(nameR, dbToArray, depth)
-        val (bodyL, prototypesL, programL) = l.compile(nameL, dbToArray, depth)
+        val (bodyR, prototypesR, programR, deletesR) = r.compile(nameR, dbToArray, depth)
 
-        val application =
-            applicationDefinition
-                .replace("[[name]]", pathName)
-                .replace("[[nameR]]", nameR)
-                .replace("[[nameL]]", nameL)
+        val application: String
 
-        return Triple(bodyR + bodyL + application, prototypesR + prototypesL, programR + programL)
+        val (bodyL, prototypesL, programL, deletesL) =
+            if(l is Abstraction && false) {
+                application =
+                    directApplicationDefinition
+                        .replace("[[name]]", pathName)
+                        .replace("[[nameR]]", nameR)
+                        .replace("[[nameL]]", nameL)
+
+                l.directCall(nameL, dbToArray, depth)
+            }
+            else {
+                application =
+                    applicationDefinition
+                        .replace("[[name]]", pathName)
+                        .replace("[[nameR]]", nameR)
+                        .replace("[[nameL]]", nameL)
+
+                l.compile(nameL, dbToArray, depth)
+            }
+
+        return CompilerStuff(bodyR + bodyL + application, prototypesR + prototypesL, programR + programL, deletesR + deletesL)
     }
 }
 data class Name(val index: Int): Expression() {
     override val closedValue = setOf(index)
     override fun toString(): String = "$index"
 
-    override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): Triple<String, String, String> {
-        val value =
-            if(index == depth) valueFromArgument
-            else valueFromClosedValue
+    override fun compile(pathName: String, dbToArray: Map<Int, Int>, depth: Int): CompilerStuff {
+        val (value, dup) =
+            if(index == depth) Pair(valueFromArgument, dupFromArgument)
+            else Pair(valueFromClosedValue, dupFromClosedValue)
 
         val updated =
             value
                 .replace("[[name]]", pathName)
-                .replace("[[index]]", "${dbToArray[index]}")
+                .replace("[[index]]", "${dbToArray[index]}") +
+                    (if(pathName.endsWith("ret")) dup.replace("[[index]]", "${dbToArray[index]}") else "")
 
-        return Triple(updated, "", "")
+        return CompilerStuff(updated, "", "", "")
     }
 }
 
 fun main() {
-    val p = tokenize("((((fn x (fn y (fn z (x (y z))))) (fn c c)) (fn b b)) (fn a a))").map { it.parse() }
+    val p = tokenize("((fn x ((fn y x) (fn z z))) (fn w w))").map { it.parse() }
 
-    val (body, prototypes, functions) = p[0].compile("f", mapOf(), -1)
+    val (body, prototypes, functions, deletes) = p[0].compile("f", mapOf(), -1)
     val program =
         mainDefinition
             .replace("[[body]]", body)
             .replace("[[functions]]", functions)
             .replace("[[prototypes]]", prototypes)
+            .replace("[[deletes]]", deletes)
 
     println(program)
 }
