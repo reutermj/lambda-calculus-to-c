@@ -1,0 +1,46 @@
+(deftype cons head tail)
+(deftype nil)
+
+(deftype true)
+(deftype false)
+
+(defn andall (l b)
+  (case l
+    cons
+      (let (h (proj head l)
+            t (proj tail l)
+            a (and b h)
+            r (andall t a))
+        (ret r))
+    nil (ret b)))
+
+(defn reduce (a l f)
+  (case l
+    nil (ret a)
+    cons
+      (let (h (proj head l)
+            t (proj tail l)
+            i (f a h)
+            r (reduce i t f))
+        (ret r))))
+
+(defn and (x y)
+  (case x
+    true (case y true (ret x) false (ret y))
+    false (ret x)))
+
+(defn or (x y)
+  (case x
+    true (ret x)
+    false (case y true (ret y) false (ret y))))
+
+(defn main ()
+  (let (t (new true)
+        f (new false)
+        n (new nil)
+        andfn (pap and)
+        a1 (new cons t n)
+        a2 (new cons t a1)
+        a3 (new cons t a2)
+        r (reduce f a3 andfn))
+    (ret r)))
