@@ -26,7 +26,7 @@
 
 (defn and (x y)
   (case x
-    true (case y true (ret x) false (ret y))
+    true (case y true (ret y) false (ret y))
     false (ret x)))
 
 (defn or (x y)
@@ -42,5 +42,7 @@
         a1 (new cons t n)
         a2 (new cons t a1)
         a3 (new cons t a2)
-        r (reduce f a3 andfn))
-    (ret r)))
+        r1 (pap reduce t)
+        r2 (pap r1 a3)
+        r3 (r2 andfn))
+    (ret r3)))

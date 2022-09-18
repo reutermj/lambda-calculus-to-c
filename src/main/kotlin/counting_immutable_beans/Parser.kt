@@ -1,12 +1,16 @@
 package counting_immutable_beans
 
 import java.io.File
+import java.util.Date
+import kotlin.math.exp
 
 sealed class Expression {
     abstract fun evaluate(context: Context): Location
+    abstract val freeVariables: Set<Variable>
 }
 
 data class ConstAppFull(val fnRef: FnName, var args: List<Variable>) : Expression() {
+    override val freeVariables = args.toSet()
     override fun evaluate(context: Context): Location {
         val (fnBody, parameters) = FnDefs[fnRef]
         assert(args.size == parameters.size)
@@ -16,6 +20,7 @@ data class ConstAppFull(val fnRef: FnName, var args: List<Variable>) : Expressio
 }
 
 data class ConstAppPart(val fnRef: FnName, var args: List<Variable>) : Expression() {
+    override val freeVariables: Set<Variable> = args.toSet()
     override fun evaluate(context: Context): Location {
         val (fnBody, paramters) = FnDefs[fnRef]
         assert(args.size < paramters.size)
@@ -27,6 +32,7 @@ data class ConstAppPart(val fnRef: FnName, var args: List<Variable>) : Expressio
 }
 
 data class VarPapFull(val fnRef: Variable, val args: List<Variable>) : Expression() {
+    override val freeVariables: Set<Variable> = args.toSet()
     override fun evaluate(context: Context): Location {
         val papValue = Heap[context[fnRef]] as PapValue
         val locs = papValue.heapLocs + args.map { context[it] }
@@ -36,6 +42,7 @@ data class VarPapFull(val fnRef: Variable, val args: List<Variable>) : Expressio
 }
 
 data class VarPapPart(var fnRef: Variable, val args: List<Variable>) : Expression() {
+    override val freeVariables: Set<Variable> = args.toSet()
     override fun evaluate(context: Context): Location {
         val papValue = Heap[context[fnRef]] as PapValue
         val locs = papValue.heapLocs + args.map { context[it] }
@@ -47,6 +54,7 @@ data class VarPapPart(var fnRef: Variable, val args: List<Variable>) : Expressio
 }
 
 data class Ctor(val name: CtorName, val values: List<Variable>) : Expression() {
+    override val freeVariables: Set<Variable> = values.toSet()
     override fun evaluate(context: Context): Location {
         val loc = getNextLocation()
         val locs = values.map { context[it] }
@@ -57,32 +65,146 @@ data class Ctor(val name: CtorName, val values: List<Variable>) : Expression() {
 }
 
 data class Proj(val index: Variable, val variable: Variable) : Expression() {
+    override val freeVariables: Set<Variable> = setOf(variable)
     override fun evaluate(context: Context): Location {
         val ctor = Heap[context[variable]] as CtorValue
         return ctor[index]
     }
 }
 
+data class Reset(val variable: Variable) : Expression() {
+    override val freeVariables: Set<Variable> = setOf(variable)
+    override fun evaluate(context: Context): Location {
+        val loc = context[variable]
+        val ctor = Heap[loc] as CtorValue
+        return if(ctor.refCount == 1) {
+            val values = ctor.values.values.toList()
+            ctor.values = ctor.values.mapValues { _ -> invalidLoc }
+            Heap.dec(values)
+            loc
+        } else {
+            Heap.dec(listOf(loc))
+            invalidLoc
+        }
+    }
+}
+
+data class Reuse(val variable: Variable, val ctor: Ctor) : Expression() {
+    override val freeVariables: Set<Variable> = setOf(variable) + ctor.freeVariables
+    override fun evaluate(context: Context): Location {
+        val loc = context[variable]
+        return if(loc == invalidLoc) {
+            ctor.evaluate(context)
+        } else {
+            val locs = ctor.values.map { context[it] }
+            val ctorValue = Heap[loc] as CtorValue
+            val names = TypeDefs[ctor.name]
+            ctorValue.values = names.zip(locs).toMap()
+            loc
+        }
+    }
+}
+
 sealed class FnBody() {
+    abstract val freeVariables: Set<Variable>
     abstract fun evaluate(context: Context): Location
+    abstract fun S(v: Variable, n: CtorName): Pair<FnBody, Boolean>
+    abstract fun D(v: Variable, n: CtorName): FnBody
+    abstract fun R(): FnBody
+
+    abstract fun R2(): FnBody
+    abstract fun D2(deallocTargets: Map<Variable, CtorName>): FnBody
+    abstract fun S2(deallocTargets: Map<Variable, CtorName>, vars: Set<Variable>): Pair<FnBody, Set<Variable>>
 }
 
 data class Ret(val retVal: Variable) : FnBody() {
+    override val freeVariables = setOf(retVal)
     override fun evaluate(context: Context) = context[retVal]
+    override fun S(v: Variable, n: CtorName) = Pair(this, false)
+    override fun D(v: Variable, n: CtorName) = this
+    override fun R() = this
+
+    override fun R2() = this
+    override fun D2(deallocTargets: Map<Variable, CtorName>) = this
+    override fun S2(deallocTargets: Map<Variable, CtorName>, vars: Set<Variable>) = Pair(this, setOf<Variable>())
 }
 
 data class Let(val variable: Variable, val expression: Expression, val body: FnBody) : FnBody() {
+    override val freeVariables: Set<Variable> = expression.freeVariables + (body.freeVariables - variable)
     override fun evaluate(context: Context): Location {
         val loc = expression.evaluate(context)
         return body.evaluate(context + Pair(variable, loc))
     }
+
+    override fun S(v: Variable, n: CtorName) =
+        if(expression is Ctor && expression.name == n) Pair(Let(variable, Reuse(v, expression), body), true)
+        else {
+            val (bodyPrime, isChanged) = body.S(v, n)
+            Pair(Let(variable, expression, bodyPrime), isChanged)
+        }
+
+    override fun D(v: Variable, n: CtorName): FnBody =
+        if(expression.freeVariables.contains(v) || body.freeVariables.contains(v)) Let(variable, expression, body.D(v, n))
+        else {
+            val freshVar = getNextFreshVar()
+            val (s, isChanged) = S(freshVar, n)
+            if(isChanged) Let(freshVar, Reset(v), s)
+            else this
+        }
+
+    override fun R() = Let(variable, expression, body.R())
+
+    override fun R2() = Let(variable, expression, body.R())
+
+    override fun D2(deallocTargets: Map<Variable, CtorName>): FnBody {
+        val subsets = (deallocTargets.keys - (body.freeVariables + expression.freeVariables)).subsets() - setOf()
+        return if(subsets.isEmpty()) Let(variable, expression, body.D2(deallocTargets))
+        else {
+            for(subset in subsets) {
+                val (b, reusedVars) = body.S2(deallocTargets, subset)
+
+            }
+
+            this
+        }
+    }
+
+    override fun S2(deallocTargets: Map<Variable, CtorName>, vars: Set<Variable>): Pair<FnBody, Set<Variable>> {
+        TODO("Not yet implemented")
+    }
 }
 
 data class Case(val variable: Variable, val bodies: Map<CtorName, FnBody>) : FnBody() {
+    override val freeVariables: Set<Variable> =
+        bodies.values.fold(setOf<Variable>()) { acc, body -> body.freeVariables + acc } + variable
     override fun evaluate(context: Context): Location {
         val ctor = Heap[context[variable]] as CtorValue
         val body = bodies[ctor.ctorName]!!
         return body.evaluate(context)
+    }
+
+    override fun S(v: Variable, n: CtorName): Pair<FnBody, Boolean> {
+        val pairs = bodies.mapValues { (_, value) -> value.S(v, n) }
+        val isChanged = pairs.values.fold(false) { acc, pair -> acc && pair.second }
+        return Pair(Case(variable, pairs.mapValues { (_, value) -> value.first }), isChanged)
+    }
+
+    override fun D(v: Variable, n: CtorName) =
+        Case(variable, bodies.mapValues { (_, value) -> value.D(v, n) })
+
+    override fun R() =
+        Case(variable, bodies.mapValues { (key, value) -> value.D(variable, key) })
+
+    override fun R2() =
+        Case(variable, bodies.mapValues { (key, value) -> value.D2(mapOf(variable to key)) })
+
+    override fun D2(deallocTargets: Map<Variable, CtorName>) =
+        Case(variable, bodies.mapValues { (key, value) -> value.D2(deallocTargets + (variable to key)) })
+
+    override fun S2(deallocTargets: Map<Variable, CtorName>, vars: Set<Variable>): Pair<FnBody, Set<Variable>> {
+        val pairs = bodies.mapValues { (key, value) -> value.S2(deallocTargets + (variable to key), vars) }
+        val reusedVars = pairs.values.fold(setOf<Variable>()) { acc, pair -> acc + pair.second }
+        return Pair(Case(variable, pairs.mapValues { (_, value) -> value.first }), reusedVars)
     }
 }
 
@@ -92,8 +214,10 @@ data class CtorName(val name: String)
 data class Location(val loc: Int)
 
 var nextLoc = 0
+var nextFreshVar = 0
+fun getNextFreshVar() = Variable("^${nextFreshVar++}")
 fun getNextLocation() = Location(nextLoc++)
-
+val invalidLoc = Location(-1)
 class Context private constructor(private val context: Map<Variable, Location>) {
     constructor(): this(mapOf()) {}
     constructor(bindings: List<Pair<Variable, Location>>): this(bindings.toMap()) {}
@@ -104,6 +228,25 @@ object Heap {
     private val heap = mutableMapOf<Location, HeapValue>()
     operator fun get(location: Location) = heap[location] ?: throw Exception("Could not find $location on the heap")
     operator fun set(location: Location, value: HeapValue) { heap[location] = value }
+
+    fun dec(locs: List<Location>) {
+        for(loc in locs) {
+            if(loc == invalidLoc) continue
+            val value = Heap[loc]
+            if(value.refCount > 1) value.refCount--
+            else if(value is PapValue) {
+                dec(value.heapLocs)
+                heap.remove(loc)
+            } else if (value is CtorValue) {
+                dec(value.values.values.toList())
+                heap.remove(loc)
+            } else throw Exception("Could not find $loc on the heap")
+        }
+    }
+
+    fun inc(locs: List<Location>) {
+        for(loc in locs) Heap[loc].refCount++
+    }
 }
 
 object FnDefs {
@@ -119,10 +262,12 @@ object TypeDefs {
     operator fun set(name: CtorName, value: List<Variable>) { typeDefs[name] = value }
 }
 
-sealed class HeapValue
+sealed class HeapValue {
+    var refCount = 1
+}
 
 data class PapValue(val fnRef: FnBody, val parameters: List<Variable>, val heapLocs: List<Location>) : HeapValue()
-data class CtorValue(val ctorName: CtorName, val values: Map<Variable, Location>) : HeapValue() {
+data class CtorValue(val ctorName:  CtorName, var values: Map<Variable, Location>) : HeapValue() {
     operator fun get(name: Variable) = values[name] ?: throw Exception("Could not find variable with $name")
 }
 
@@ -276,10 +421,11 @@ data class SequenceToken(val children: List<Token>): Token() {
 
 fun main() {
     val basePath = File(".").absolutePath
-    val file = File(basePath.substring(0, basePath.length - 1) + "resources" + File.separator + "test")
+    val file = File(basePath.substring(0, basePath.length - 1) + "resources" + File.separator + "swap")
     val program = file.readText()
     val tokens = tokenize(program)
     for(token in tokens) token.parseProgram()
+    val rc = FnDefs[FnName("swap")].first.R()
     val (body, vars) = FnDefs[FnName("main")]
     assert(vars.isEmpty())
     println(Heap[body.evaluate(Context())])
@@ -330,3 +476,11 @@ fun tokenize(s: String): List<Token> {
     inner(0, tokens)
     return tokens
 }
+
+fun <T> Set<T>.subsets(): List<Set<T>> =
+    if(this.isEmpty()) listOf(setOf())
+    else {
+        val e = this.first()
+        val s = (this - e).subsets()
+        s + (s.map { it + e })
+    }

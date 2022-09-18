@@ -1,0 +1,17 @@
+(deftype cons head tail)
+(deftype nil)
+
+(defn swap (xs)
+  (case xs
+    nil (ret xs)
+    cons
+      (let (t1 (proj tail xs))
+        (case t1
+          nil (ret xs)
+          cons
+            (let (h1 (proj head xs)
+                  h2 (proj head t1)
+                  t2 (proj tail t1)
+                  r1 (new cons h1 t2)
+                  r2 (new cons h2 r1))
+              (ret r2))))))
